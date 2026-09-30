@@ -3,11 +3,12 @@
  *   cloudbase —— 腾讯云开发（上海）PostgreSQL 模式；学生匿名登录，教师账号密码登录
  *   mock      —— 本机测试用，数据存在浏览器 localStorage，只允许在 localhost 使用
  *   off       —— 不连接后台（页面照常可用，选择与作答只保存在本机）
- * 三张表：签到 ck_checkins、选择 ck_choices、作答 ck_answers（只增不改，教师端取每人最新一条）
+ * 表：加入 ck_checkins、选择 ck_choices、作答 ck_answers（只增不改，教师端取每人最新一条）、课堂 ck_classrooms
+ * 函数：ck_join（学生凭课堂码进入）、ck_publish / ck_set_current / ck_set_open（教师管理课堂）
  */
 (function () {
   'use strict';
-  const COLLECTIONS = { checkins: 'ck_checkins', choices: 'ck_choices', answers: 'ck_answers' };
+  const COLLECTIONS = { checkins: 'ck_checkins', choices: 'ck_choices', answers: 'ck_answers', classrooms: 'ck_classrooms', danmaku: 'ck_danmaku' };
 
   // 以北京时间的日期作为“这节课”的标识，例如 2026-09-30
   const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
@@ -16,6 +17,13 @@
     if (result && result.error) throw result.error;
     return result;
   };
+
+  // 课堂未开放或已结束提交时，数据库的行级安全会拒绝写入
+  const isClosedError = (error) => /row-level security|42501|permission denied|violates/i.test(
+    String((error && (error.message || error.code)) || error || ''));
+
+  // 课堂码：4 个字母＋4 位数字，不区分大小写
+  const normalizeCode = (value) => String(value || '').replace(/\s+/g, '').toUpperCase();
 
   // 腾讯云开发 PostgreSQL 模式（JS SDK v3）：三张表 ck_checkins / ck_choices / ck_answers，
   // 行级安全策略保证学生只能新增、教师账号才能读取和删除（见 tools/cloudbase-pg.sql）。
@@ -65,7 +73,19 @@
       async add(kind, doc) {
         unwrap(await db.from(COLLECTIONS[kind]).insert(toRow({ ...doc, ts: Date.now() })));
       },
-      async fetchAll(kind, where) {
+      async addMany(kind, docs) {
+        const ts = Date.now();
+        unwrap(await db.from(COLLECTIONS[kind]).insert(docs.map((doc) => toRow({ ...doc, ts }))));
+      },
+      async rpc(name, params) {
+        return unwrap(await db.rpc(name, params || {})).data;
+      },
+      // options.limit：只取最新的若干条（按 id 倒序）
+      async fetchAll(kind, where, options = {}) {
+        if (options.limit) {
+          const result = unwrap(await filtered(db.from(COLLECTIONS[kind]).select('*'), where).order('id', { ascending: false }).range(0, options.limit - 1));
+          return (result.data || []).map(fromRow);
+        }
         const rows = [];
         for (let from = 0; ; from += PAGE) {
           const result = unwrap(await filtered(db.from(COLLECTIONS[kind]).select('*'), where).order('id', { ascending: true }).range(from, from + PAGE - 1));
@@ -144,6 +164,36 @@
       if (event.key && event.key.startsWith(prefix)) notify(event.key.slice(prefix.length));
     });
     const matches = (doc, where) => Object.entries(where).every(([key, value]) => doc[key] === value);
+    // 模拟数据库的课堂规则：加入需是当前课堂，选择与作答还需未结束提交
+    const classroomState = (id) => {
+      const room = read('classrooms').find((row) => row.id === id && row.is_current);
+      return room ? (room.submissions_open ? 'open' : 'closed') : null;
+    };
+    const guard = (kind, doc, uid) => {
+      const state = classroomState(doc.classroom);
+      if (!state || (kind !== 'checkins' && state !== 'open')) throw new Error('new row violates row-level security policy (mock)');
+      if (kind === 'danmaku') {
+        const room = read('classrooms').find((row) => row.id === doc.classroom);
+        const recent = read('danmaku').some((row) => row.owner === uid && Date.now() - row.ts < 5000);
+        if (!room || room.danmaku === 'off' || recent) throw new Error('new row violates row-level security policy (mock)');
+      }
+    };
+    const teacherOnly = () => { if (!localStorage.getItem(prefix + 'teacher')) throw new Error('只有教师账号可以管理课堂'); };
+    const newCode = () => {
+      const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+      let code = '';
+      for (let i = 0; i < 4; i += 1) code += letters[Math.floor(Math.random() * letters.length)];
+      return code + String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+    };
+    const updateRoom = (id, change) => {
+      const rows = read('classrooms');
+      const room = rows.find((row) => row.id === id);
+      if (!room) throw new Error('课堂不存在');
+      change(room, rows);
+      room.updated_at = new Date().toISOString();
+      write('classrooms', rows);
+      return { ...room };
+    };
     return {
       name: 'mock',
       async session() {
@@ -163,11 +213,50 @@
         return this.session();
       },
       async signOut() { localStorage.removeItem(prefix + 'teacher'); },
-      async add(kind, doc) {
+      async add(kind, doc) { return this.addMany(kind, [doc]); },
+      async addMany(kind, docs) {
         const uid = await this.ensureAnonymous();
+        docs.forEach((doc) => guard(kind, doc, uid));
         const rows = read(kind);
-        rows.push({ _id: Math.random().toString(36).slice(2), _openid: uid, ...doc, ts: Date.now() });
+        const ts = Date.now();
+        docs.forEach((doc) => rows.push({ id: Math.random().toString(36).slice(2), owner: uid, ...(kind === 'danmaku' ? { status: 'new' } : {}), ...doc, ts }));
         write(kind, rows);
+      },
+      async rpc(name, params = {}) {
+        if (name === 'ck_join') {
+          const room = read('classrooms').find((row) => row.code === normalizeCode(params.p_code) && row.is_current);
+          return room ? [{ classroom: room.id, course: room.course, chapter: room.chapter, name: room.name,
+            submissions_open: room.submissions_open, danmaku: room.danmaku, pwd_hash: '' }] : [];
+        }
+        teacherOnly();
+        if (name === 'ck_publish') {
+          const rows = read('classrooms');
+          rows.forEach((row) => { if (row.course === params.p_course) row.is_current = false; });
+          const now = new Date().toISOString();
+          const room = { id: Date.now(), course: params.p_course, code: newCode(), name: String(params.p_name).trim(),
+            chapter: params.p_chapter, is_current: true, submissions_open: true, danmaku: 'off', created_at: now, updated_at: now };
+          rows.push(room);
+          write('classrooms', rows);
+          return { ...room };
+        }
+        if (name === 'ck_set_current') {
+          return updateRoom(params.p_classroom, (room, rows) => {
+            if (params.p_current) {
+              rows.forEach((row) => { if (row.course === room.course) row.is_current = false; });
+              room.submissions_open = true;
+            }
+            room.is_current = Boolean(params.p_current);
+          });
+        }
+        if (name === 'ck_set_open') return updateRoom(params.p_classroom, (room) => { room.submissions_open = Boolean(params.p_open); });
+        if (name === 'ck_set_danmaku') return updateRoom(params.p_classroom, (room) => { room.danmaku = params.p_mode; });
+        if (name === 'ck_danmaku_status') {
+          const rows = read('danmaku');
+          const row = rows.find((item) => String(item.id) === String(params.p_id));
+          if (row) { row.status = params.p_status; write('danmaku', rows); }
+          return row ? { ...row } : null;
+        }
+        throw new Error('未知的后台函数：' + name);
       },
       watch(kind, where, onChange) {
         const listener = { kind, fire: () => onChange(read(kind).filter((doc) => matches(doc, where))) };
@@ -175,7 +264,10 @@
         listener.fire();
         return () => listeners.delete(listener);
       },
-      async fetchAll(kind, where) { return read(kind).filter((doc) => matches(doc, where)); },
+      async fetchAll(kind, where, options = {}) {
+        const rows = read(kind).filter((doc) => matches(doc, where));
+        return options.limit ? rows.slice(-options.limit).reverse() : rows;
+      },
       async removeAll(kind, where) { write(kind, read(kind).filter((doc) => !matches(doc, where))); },
     };
   }
@@ -185,6 +277,8 @@
     attached: false,
     today,
     COLLECTIONS,
+    isClosedError,
+    normalizeCode,
     create(config) {
       if (!config || config.provider === 'off') return null;
       if (config.provider === 'cloudbase') return cloudbaseProvider(config);

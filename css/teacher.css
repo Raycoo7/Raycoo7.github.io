@@ -91,3 +91,47 @@ em { color: var(--muted); font-style: normal; font-size: 14px; white-space: nowr
   .tw-option, .tw-option.single { grid-template-columns: 1fr; }
   .tw-top { padding: 10px 14px; }
 }
+
+/* 我的课堂 */
+.tw-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 18px; }
+.tw-head h1 { margin: 0; font-size: 30px; }
+.tw-kicker { margin: 0; color: var(--rust); font: 800 12px/1.4 var(--sans); letter-spacing: .12em; }
+.tw-head .tw-primary { margin-top: 0; }
+.tw-secondary { margin-top: 14px; padding: 10px 18px; border: 1.5px solid var(--teal); border-radius: 8px; color: var(--teal); background: var(--white); font: 800 15px/1 var(--sans); cursor: pointer; }
+.tw-empty { padding: 28px; border: 1.5px dashed var(--line); border-radius: 12px; background: var(--white); color: var(--muted); text-align: center; }
+.tw-room { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; align-items: center; padding: 22px 26px; border-radius: 12px; color: #fff; background: linear-gradient(135deg, #1d4f4a, #23655f); box-shadow: var(--shadow); }
+.tw-room h2 { margin: 8px 0 4px; font-size: 26px; }
+.tw-room p { margin: 0 0 10px; opacity: .88; font-size: 15px; }
+.tw-room-open { color: #fff; font-weight: 800; }
+.tw-badge { display: inline-block; padding: 3px 10px; border-radius: 20px; background: rgba(255,255,255,.18); font-size: 13px; font-weight: 800; }
+.tw-badge.is-live { background: #e8c46a; color: #3b2a07; }
+.tw-badge.is-closed { background: var(--rust); }
+.tw-room-code { text-align: right; }
+.tw-room-code small { display: block; opacity: .8; font-size: 13px; }
+.tw-room-code b { display: block; margin: 2px 0 8px; font: 800 44px/1.1 var(--sans); letter-spacing: .12em; }
+.tw-link { display: flex; align-items: center; gap: 8px; margin: 10px 0 16px; color: var(--muted); font-size: 14px; }
+.tw-link input { flex: 1 1 auto; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--white); color: var(--muted); font: inherit; }
+.tw-room-actions { align-items: center; margin-bottom: 18px; }
+.tw-room-actions .tw-primary, .tw-room-actions .tw-secondary { margin-top: 0; }
+.tw-room-actions select, .tw-switch select { margin-left: 6px; padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 8px; background: var(--white); font: inherit; }
+.tw-table td.ok { color: var(--teal); font-weight: 700; }
+.tw-dialog { width: min(520px, calc(100% - 32px)); padding: 24px 26px; border: 0; border-radius: 12px; box-shadow: 0 30px 70px rgba(0,0,0,.25); }
+.tw-dialog::backdrop { background: rgba(32, 28, 24, .55); }
+.tw-dialog h2 { margin: 0 0 4px; }
+.tw-dialog label { display: block; margin-top: 14px; font-weight: 700; }
+.tw-dialog input, .tw-dialog select { display: block; width: 100%; margin-top: 6px; padding: 10px 12px; border: 1.5px solid var(--line); border-radius: 8px; font: inherit; background: #fff; }
+/* 弹幕记录 */
+.tw-dm-table td { vertical-align: middle; }
+.tw-dm-table .tw-dm-text { font-size: 16px; }
+.tw-dm.is-hidden .tw-dm-text { color: var(--muted); text-decoration: line-through; }
+.tw-dm em { color: var(--muted); font-size: 14px; font-style: normal; white-space: nowrap; }
+.tw-dm.is-new em { color: var(--rust); font-weight: 800; }
+.tw-dm-actions { white-space: nowrap; }
+.tw-dm-actions button { margin-right: 4px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); font: 700 13px/1 var(--sans); cursor: pointer; }
+.tw-dm-actions button[data-dm-status=shown] { color: #fff; background: var(--teal); border-color: var(--teal); }
+.tw-bar .tw-secondary { margin-top: 0; }
+@media (max-width: 760px) {
+  .tw-room { grid-template-columns: 1fr; }
+  .tw-room-code { text-align: left; }
+  .tw-dm-table { display: block; overflow-x: auto; }
+}
