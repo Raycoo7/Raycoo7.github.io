@@ -1,4 +1,4 @@
-/* 投屏弹幕：在课堂完整版页面上滚动显示当前课堂的学生弹幕，并循环播放。
+/* 投屏弹幕：在课堂完整版页面上滚动显示当前课堂的学生弹幕（“姓名：内容”），并循环播放。
  * 需要教师已在同一浏览器登录教师工作台（读取弹幕需教师账号）。
  * 弹幕模式由工作台设置：关闭 / 直接上屏（未隐藏的都显示）/ 审核后上屏（只显示已通过的）。
  * 播放规则：新来的弹幕立即上屏；空档时按顺序循环播放本课堂可显示的弹幕（最近 60 条），被隐藏的立即撤下。
@@ -28,6 +28,7 @@
     font: 800 clamp(22px, 2.4vw, 34px)/1.3 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; text-shadow: 0 1px 2px rgba(0,0,0,.6);
     will-change: transform; animation: dm-fly var(--dm-duration, 11s) linear forwards; }
   .dm-item.is-new { background: rgba(164, 73, 45, .78); }
+  .dm-name { margin-right: 2px; color: #ffd98a; }
   .dm-stage.is-paused .dm-item { animation-play-state: paused; }
   @keyframes dm-fly { from { transform: translateX(0); } to { transform: translateX(calc(-100vw - 100%)); } }
   .dm-bar { position: fixed; z-index: 301; left: 108px; bottom: 22px; display: flex; gap: 6px; align-items: center; padding: 5px 8px; border-radius: 8px;
@@ -92,9 +93,12 @@
     laneFree[lane] = Math.max(now, laneFree[lane]) + 2200;
     const item = document.createElement('div');
     item.className = isNew ? 'dm-item is-new' : 'dm-item';
-    item.textContent = doc.text;
+    const name = document.createElement('span');
+    name.className = 'dm-name';
+    name.textContent = `${doc.name}：`;
+    item.append(name, document.createTextNode(doc.text));
     item.style.top = `${lane * (100 / LANES)}%`;
-    item.style.setProperty('--dm-duration', `${10 + Math.min(doc.text.length, 40) / 8}s`);
+    item.style.setProperty('--dm-duration', `${10 + Math.min(doc.text.length + String(doc.name).length, 50) / 8}s`);
     item.style.animationDelay = `${delay}ms`;
     item.addEventListener('animationend', () => { item.remove(); flying.delete(id); });
     flying.set(id, item);

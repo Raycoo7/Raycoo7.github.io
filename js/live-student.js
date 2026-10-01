@@ -1,7 +1,7 @@
 /* 学生端（章节页）：确认是从首页用课堂码进入的本周课堂后，
  *   · 投票、配对、推演等选择：点选后立即交给老师，可以改选；
  *   · 文字作答：自动保存为本机草稿，点“提交作业”一次交给老师，修改后可再次提交（老师看到最新一次）；
- *   · 弹幕：发送短句，显示在老师投屏的课堂页面上（老师开放后可用，发送人仅老师可见）。
+ *   · 弹幕：发送短句，连同姓名显示在老师投屏的课堂页面上（老师开放后可用）。
  * 需要页面先加载 live-core.js，并设置 window.CLASS_LIVE_CONFIG。
  */
 (function () {
@@ -104,7 +104,7 @@
         <input type="text" maxlength="40" placeholder="发一条弹幕（40 字内）" aria-label="弹幕内容" autocomplete="off">
         <button type="submit">发送</button>
       </form>
-      <p class="cl-hint" data-cl-dm-state>弹幕显示在老师投屏的页面上；实名记录，发送人仅老师可见。</p>
+      <p class="cl-hint" data-cl-dm-state>弹幕会以“你的姓名：内容”显示在老师投屏的页面上，请文明发言。</p>
     </div>`;
   document.body.appendChild(panel);
   panel.querySelector('[data-cl-switch]').addEventListener('click', () => {
@@ -114,7 +114,9 @@
   const fold = panel.querySelector('[data-cl-fold]');
   const setFolded = (value) => { panel.classList.toggle('is-folded', value); fold.textContent = value ? '展开' : '收起'; save('classlive-panel-folded', value); };
   fold.addEventListener('click', () => setFolded(!panel.classList.contains('is-folded')));
-  setFolded(Boolean(load('classlive-panel-folded', false)));
+  // 手机等窄屏默认收起，避免挡住正文；学生展开或收起后记住选择
+  const savedFold = load('classlive-panel-folded', null);
+  setFolded(savedFold === null ? window.innerWidth < 700 : Boolean(savedFold));
 
   // ---------- 文字作答：统一“提交作业” ----------
   const areaOf = (box) => box.querySelector('textarea');
