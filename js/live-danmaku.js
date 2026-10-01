@@ -2,6 +2,8 @@
  * 需要教师已在同一浏览器登录教师工作台（读取弹幕需教师账号）。
  * 弹幕模式由工作台设置：关闭 / 直接上屏（未隐藏的都显示）/ 审核后上屏（只显示已通过的）。
  * 播放规则：新来的弹幕立即上屏；空档时按顺序循环播放本课堂可显示的弹幕（最近 60 条），被隐藏的立即撤下。
+ * 清屏：撤下屏幕上现有弹幕，并让它们不再循环（本机按课堂记住，刷新页面也不会回来）；之后的新弹幕照常上屏和循环。
+ *       清屏只影响投屏显示，工作台里的弹幕记录不受影响。
  * 左下角小控件：循环开关、暂停、清屏、收起。页面需先加载 live-core.js，并设置 window.CLASS_LIVE_CONFIG。
  */
 (function () {
@@ -49,7 +51,7 @@
   bar.className = 'dm-bar';
   bar.setAttribute('data-ix', '');
   bar.innerHTML = '<span data-dm-state>弹幕：连接中</span><button type="button" data-dm-loop aria-pressed="true">循环：开</button>'
-    + '<button type="button" data-dm-pause>暂停</button><button type="button" data-dm-clear>清屏</button><button type="button" data-dm-toggle>收起</button>';
+    + '<button type="button" data-dm-pause>暂停</button><button type="button" data-dm-clear title="撤下现有弹幕，且不再循环播放；之后的新弹幕照常显示">清屏</button><button type="button" data-dm-toggle>收起</button>';
   ['click', 'keydown'].forEach((type) => bar.addEventListener(type, (event) => event.stopPropagation()));
   document.body.append(stage, bar);
   const stateEl = bar.querySelector('[data-dm-state]');
@@ -65,6 +67,12 @@
   const inPool = new Set();
   const seen = new Set();       // 已见过的 id（用于判断“新来的”）
   const flying = new Map();     // id → 正在飞的元素
+  let cleared = new Set();      // 已清屏的弹幕 id（不再上屏、不再循环），按课堂保存在本机
+  let clearedRoom = null;
+  const loadCleared = (roomId) => {
+    try { return new Set(JSON.parse(store.get(`cleared:${roomId}`) || '[]')); } catch (error) { return new Set(); }
+  };
+  const saveCleared = () => store.set(`cleared:${clearedRoom}`, JSON.stringify(Array.from(cleared).slice(-800)));
   const laneFree = new Array(LANES).fill(0);
 
   const modeText = () => (room.danmaku === 'review' ? '审核后上屏' : '直接上屏');
@@ -133,10 +141,12 @@
 
   async function pollDanmaku() {
     if (!room || room.danmaku === 'off') return;
+    if (clearedRoom !== String(room.id)) { clearedRoom = String(room.id); cleared = loadCleared(clearedRoom); }
     try {
       const rows = (await backend.fetchAll('danmaku', { classroom: Number(room.id) }, { limit: 80 })).reverse();
       rows.forEach((doc) => {
         const id = String(doc.id);
+        if (cleared.has(id)) { seen.add(id); dropFromPool(id); return; }
         if (!visible(doc)) { dropFromPool(id); return; }
         if (!inPool.has(id)) {
           inPool.add(id);
@@ -173,7 +183,20 @@
     stage.classList.toggle('is-paused', paused);
     event.currentTarget.textContent = paused ? '继续' : '暂停';
   });
-  bar.querySelector('[data-dm-clear]').addEventListener('click', () => { stage.innerHTML = ''; flying.clear(); laneFree.fill(0); });
+  // 清屏：撤下现有弹幕，并把已出现过的弹幕移出循环；之后的新弹幕照常显示
+  bar.querySelector('[data-dm-clear]').addEventListener('click', () => {
+    if (clearedRoom) {
+      [...seen, ...inPool].forEach((id) => cleared.add(id));
+      saveCleared();
+    }
+    pool.length = 0;
+    inPool.clear();
+    cursor = 0;
+    stage.innerHTML = '';
+    flying.clear();
+    laneFree.fill(0);
+    if (room) setState(`弹幕：${room.danmaku === 'off' ? '已关闭' : modeText()} · 已清屏，之前的弹幕不再循环`);
+  });
   bar.querySelector('[data-dm-toggle]').addEventListener('click', (event) => {
     const min = bar.classList.toggle('is-min');
     event.currentTarget.textContent = min ? '弹幕' : '收起';

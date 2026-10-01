@@ -135,3 +135,39 @@ em { color: var(--muted); font-style: normal; font-size: 14px; white-space: nowr
   .tw-room-code { text-align: left; }
   .tw-dm-table { display: block; overflow-x: auto; }
 }
+/* 选择课程 */
+.tw-picker { max-width: 960px; margin: 20px auto; }
+.tw-picker h1 { margin: 0 0 4px; font-size: 30px; }
+.tw-course-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; margin-top: 18px; }
+.tw-course { display: block; padding: 22px 24px; border: 2px solid transparent; border-radius: 12px; background: var(--white); box-shadow: var(--shadow); color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
+.tw-course:hover, .tw-course:focus-visible { border-color: var(--teal); outline: none; }
+.tw-course.is-current { border-color: var(--rust); }
+.tw-course small { color: var(--rust); font-weight: 800; font-size: 13px; }
+.tw-course strong { display: block; margin: 6px 0 8px; font-size: 24px; }
+.tw-course span { color: var(--muted); font-size: 14px; }
+/* 概念学习课程：作业情况与学生作答 */
+.tw-step { margin: 18px 0 2px; padding-top: 10px; border-top: 2px solid var(--line); color: var(--teal); font-size: 18px; }
+.tw-card .tw-step:first-of-type { border-top: 0; }
+.tw-sub { display: block; color: var(--muted); font-size: 13px; font-weight: 400; }
+.tw-values { display: flex; flex-wrap: wrap; gap: 8px; }
+.tw-values span { padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); font-weight: 700; }
+.tw-values span.is-ok { border-color: var(--teal); background: var(--teal-soft); }
+.tw-values span.is-bad { border-color: var(--rust); background: var(--rust-soft); }
+.tw-values em { margin-left: 6px; }
+.tw-texts { margin-top: 6px; }
+.tw-texts summary { color: var(--teal); font-weight: 800; cursor: pointer; }
+.tw-texts .tw-answer { margin: 10px 0 0; box-shadow: none; border: 1px solid var(--line); }
+.tw-pe-row { cursor: pointer; }
+.tw-pe-row:hover, .tw-pe-row.is-open { background: var(--teal-soft); }
+.tw-pe-detail td { padding: 6px 18px 18px; background: #fbf7f0; }
+.tw-pe-detail h4 { margin: 14px 0 6px; color: var(--rust); }
+.tw-marks { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 4px 18px; margin: 0; padding: 0; list-style: none; font-size: 15px; }
+.tw-marks li { display: grid; grid-template-columns: 18px 92px minmax(0, 1fr); gap: 6px; align-items: baseline; }
+.tw-marks li b { text-align: center; }
+.tw-marks li.is-ok b { color: var(--teal); }
+.tw-marks li.is-bad b { color: var(--rust); }
+.tw-marks li.is-none { color: var(--muted); }
+.tw-marks small { display: block; color: var(--rust); }
+.tw-mark-label { color: var(--muted); }
+.tw-marks .tw-text { white-space: pre-wrap; }
+.tw-marks li.is-text { grid-column: 1 / -1; }

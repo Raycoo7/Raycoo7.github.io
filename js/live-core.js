@@ -4,11 +4,13 @@
  *   mock      —— 本机测试用，数据存在浏览器 localStorage，只允许在 localhost 使用
  *   off       —— 不连接后台（页面照常可用，选择与作答只保存在本机）
  * 表：加入 ck_checkins、选择 ck_choices、作答 ck_answers（只增不改，教师端取每人最新一条）、课堂 ck_classrooms
- * 函数：ck_join（学生凭课堂码进入）、ck_publish / ck_set_current / ck_set_open（教师管理课堂）
+ * 函数：ck_join（学生凭课堂码进入）、ck_publish / ck_set_current / ck_set_open（教师管理课堂）、
+ *       ck_save_homework（概念学习课程的作业快照：自动同步与“提交作业”）
  */
 (function () {
   'use strict';
-  const COLLECTIONS = { checkins: 'ck_checkins', choices: 'ck_choices', answers: 'ck_answers', classrooms: 'ck_classrooms', danmaku: 'ck_danmaku' };
+  const COLLECTIONS = { checkins: 'ck_checkins', choices: 'ck_choices', answers: 'ck_answers', classrooms: 'ck_classrooms', danmaku: 'ck_danmaku',
+    homework: 'ck_homework' };
 
   // 以北京时间的日期作为“这节课”的标识，例如 2026-09-30
   const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
@@ -24,6 +26,9 @@
 
   // 课堂码：4 个字母＋4 位数字，不区分大小写
   const normalizeCode = (value) => String(value || '').replace(/\s+/g, '').toUpperCase();
+
+  // 页面所属单位：章节页 chNN、案例页 caseNN
+  const unitOf = (path) => ((path || location.pathname).match(/([a-z]+\d{2})\.html$/) || [])[1];
 
   // 腾讯云开发 PostgreSQL 模式（JS SDK v3）：三张表 ck_checkins / ck_choices / ck_answers，
   // 行级安全策略保证学生只能新增、教师账号才能读取和删除（见 tools/cloudbase-pg.sql）。
@@ -80,30 +85,47 @@
       async rpc(name, params) {
         return unwrap(await db.rpc(name, params || {})).data;
       },
-      // options.limit：只取最新的若干条（按 id 倒序）
+      // options.limit：只取最新的若干条（按 id 倒序）；options.since：[列名, 值]，只取该列大于此值的行（增量读取）
       async fetchAll(kind, where, options = {}) {
+        const base = () => {
+          const query = filtered(db.from(COLLECTIONS[kind]).select('*'), where);
+          return options.since ? query.gt(options.since[0], options.since[1]) : query;
+        };
         if (options.limit) {
-          const result = unwrap(await filtered(db.from(COLLECTIONS[kind]).select('*'), where).order('id', { ascending: false }).range(0, options.limit - 1));
+          const result = unwrap(await base().order('id', { ascending: false }).range(0, options.limit - 1));
           return (result.data || []).map(fromRow);
         }
         const rows = [];
         for (let from = 0; ; from += PAGE) {
-          const result = unwrap(await filtered(db.from(COLLECTIONS[kind]).select('*'), where).order('id', { ascending: true }).range(from, from + PAGE - 1));
+          const result = unwrap(await base().order('id', { ascending: true }).range(from, from + PAGE - 1));
           const batch = result.data || [];
           rows.push(...batch.map(fromRow));
           if (batch.length < PAGE) return rows;
         }
       },
-      watch(kind, where, onChange, onError, onStatus) {
+      // options.incremental：按 updated_at 只取有变化的行（作业快照较大，不必每次全部重读），不使用实时推送
+      watch(kind, where, onChange, onError, onStatus, options = {}) {
         let closed = false;
         let live = false;
         let pending = null;
         let channel = null;
         let realtime = null;
+        const known = new Map();
+        let cursor = null;
+        const millis = (value) => Date.parse(String(value || '').replace(/(\.\d{3})\d+/, '$1'));
         const refresh = async () => {
           try {
-            const rows = await this.fetchAll(kind, where);
-            if (!closed) onChange(rows);
+            if (!options.incremental) {
+              const rows = await this.fetchAll(kind, where);
+              if (!closed) onChange(rows);
+              return;
+            }
+            const rows = await this.fetchAll(kind, where, cursor ? { since: ['updated_at', cursor] } : {});
+            rows.forEach((row) => known.set(String(row.id), row));
+            // 回退 60 秒再读，避免并发提交时提交顺序与时间戳顺序不一致而漏掉
+            const latest = Math.max(0, ...Array.from(known.values()).map((row) => millis(row.updated_at)).filter(Number.isFinite));
+            cursor = latest ? new Date(latest - 60000).toISOString() : null;
+            if (!closed) onChange(Array.from(known.values()));
           } catch (error) {
             if (onError) onError(error);
           }
@@ -115,6 +137,11 @@
           channel = null;
         };
         refresh();
+        if (options.incremental) {
+          if (onStatus) onStatus('polling');
+          const timer = setInterval(refresh, options.interval || POLL_MS);
+          return () => { closed = true; clearInterval(timer); };
+        }
         try {
           realtime = app.realtime();
           channel = realtime
@@ -228,6 +255,20 @@
           return room ? [{ classroom: room.id, course: room.course, chapter: room.chapter, name: room.name,
             submissions_open: room.submissions_open, danmaku: room.danmaku, pwd_hash: '' }] : [];
         }
+        if (name === 'ck_save_homework') {
+          const uid = await this.ensureAnonymous();
+          const room = read('classrooms').find((row) => row.id === params.p_classroom && row.is_current && row.submissions_open);
+          if (!room || room.chapter !== params.p_unit) throw new Error('new row violates row-level security policy (mock)');
+          const rows = read('homework');
+          const now = new Date().toISOString();
+          let row = rows.find((item) => item.classroom === params.p_classroom && item.owner === uid && item.sid === params.p_sid);
+          if (!row) { row = { id: Math.max(Date.now(), ...rows.map((item) => Number(item.id) + 1 || 0)), owner: uid, course: room.course, classroom: params.p_classroom, unit: params.p_unit, submitted: false, created_at: now }; rows.push(row); }
+          Object.assign(row, { name: params.p_name, sid: params.p_sid, class_name: params.p_class, group_name: params.p_group,
+            payload: params.p_payload, progress: params.p_progress, total: params.p_total, ts: Date.now(), updated_at: now });
+          if (params.p_submit) { row.submitted = true; row.submitted_at = now; row.first_submitted_at = row.first_submitted_at || now; }
+          write('homework', rows);
+          return [{ submitted: row.submitted, submitted_at: row.submitted_at, first_submitted_at: row.first_submitted_at, updated_at: row.updated_at }];
+        }
         teacherOnly();
         if (name === 'ck_publish') {
           const rows = read('classrooms');
@@ -265,7 +306,8 @@
         return () => listeners.delete(listener);
       },
       async fetchAll(kind, where, options = {}) {
-        const rows = read(kind).filter((doc) => matches(doc, where));
+        let rows = read(kind).filter((doc) => matches(doc, where));
+        if (options.since) rows = rows.filter((doc) => String(doc[options.since[0]] || '') > String(options.since[1]));
         return options.limit ? rows.slice(-options.limit).reverse() : rows;
       },
       async removeAll(kind, where) { write(kind, read(kind).filter((doc) => !matches(doc, where))); },
@@ -279,6 +321,7 @@
     COLLECTIONS,
     isClosedError,
     normalizeCode,
+    unitOf,
     create(config) {
       if (!config || config.provider === 'off') return null;
       if (config.provider === 'cloudbase') return cloudbaseProvider(config);
