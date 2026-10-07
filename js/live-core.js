@@ -5,7 +5,7 @@
  *   off       —— 不连接后台（页面照常可用，选择与作答只保存在本机）
  * 表：加入 ck_checkins、选择 ck_choices、作答 ck_answers（只增不改，教师端取每人最新一条）、课堂 ck_classrooms
  * 函数：ck_join（学生凭课堂码进入）、ck_publish / ck_set_current / ck_set_open（教师管理课堂）、
- *       ck_save_homework（概念学习课程的作业快照：自动同步与“提交作业”）
+ *       ck_submit_answer（概念学习课程逐题“递交”，每题只收第一次）
  */
 (function () {
   'use strict';
@@ -20,9 +20,11 @@
     return result;
   };
 
+  const errorText = (error) => String((error && [error.code, error.message, error.details].filter(Boolean).join(' ')) || error || '');
+  // 同一题已经递交过（每题只收第一次）
+  const isDuplicateError = (error) => /23505|duplicate key|already exists|已递交/i.test(errorText(error));
   // 课堂未开放或已结束提交时，数据库的行级安全会拒绝写入
-  const isClosedError = (error) => /row-level security|42501|permission denied|violates/i.test(
-    String((error && (error.message || error.code)) || error || ''));
+  const isClosedError = (error) => !isDuplicateError(error) && /row-level security|42501|permission denied|violates|已结束提交/i.test(errorText(error));
 
   // 课堂码：4 个字母＋4 位数字，不区分大小写
   const normalizeCode = (value) => String(value || '').replace(/\s+/g, '').toUpperCase();
@@ -245,6 +247,12 @@
         const uid = await this.ensureAnonymous();
         docs.forEach((doc) => guard(kind, doc, uid));
         const rows = read(kind);
+        if (kind === 'choices' || kind === 'answers') {
+          const taken = new Set(rows.map((row) => `${row.classroom}|${row.sid}|${row.case}|${row.item}`));
+          if (docs.some((doc) => taken.has(`${doc.classroom}|${doc.sid}|${doc.case}|${doc.item}`))) {
+            throw Object.assign(new Error('duplicate key value violates unique constraint (mock)'), { code: '23505' });
+          }
+        }
         const ts = Date.now();
         docs.forEach((doc) => rows.push({ id: Math.random().toString(36).slice(2), owner: uid, ...(kind === 'danmaku' ? { status: 'new' } : {}), ...doc, ts }));
         write(kind, rows);
@@ -255,26 +263,38 @@
           return room ? [{ classroom: room.id, course: room.course, chapter: room.chapter, name: room.name,
             submissions_open: room.submissions_open, danmaku: room.danmaku, pwd_hash: '' }] : [];
         }
-        if (name === 'ck_save_homework') {
+        if (name === 'ck_submit_answer') {
           const uid = await this.ensureAnonymous();
           const room = read('classrooms').find((row) => row.id === params.p_classroom && row.is_current && row.submissions_open);
           if (!room || room.chapter !== params.p_unit) throw new Error('new row violates row-level security policy (mock)');
           const rows = read('homework');
           const now = new Date().toISOString();
-          let row = rows.find((item) => item.classroom === params.p_classroom && item.owner === uid && item.sid === params.p_sid);
-          if (!row) { row = { id: Math.max(Date.now(), ...rows.map((item) => Number(item.id) + 1 || 0)), owner: uid, course: room.course, classroom: params.p_classroom, unit: params.p_unit, submitted: false, created_at: now }; rows.push(row); }
-          Object.assign(row, { name: params.p_name, sid: params.p_sid, class_name: params.p_class, group_name: params.p_group,
-            payload: params.p_payload, progress: params.p_progress, total: params.p_total, ts: Date.now(), updated_at: now });
-          if (params.p_submit) { row.submitted = true; row.submitted_at = now; row.first_submitted_at = row.first_submitted_at || now; }
+          let row = rows.filter((item) => item.classroom === params.p_classroom && item.sid === params.p_sid).sort((a, b) => a.id - b.id)[0];
+          if (!row) {
+            row = { id: Math.max(Date.now(), ...rows.map((item) => Number(item.id) + 1 || 0)), owner: uid, course: room.course, classroom: params.p_classroom,
+              unit: params.p_unit, name: params.p_name, sid: params.p_sid, class_name: params.p_class, group_name: params.p_group,
+              payload: {}, submitted: false, created_at: now };
+            rows.push(row);
+          }
+          let accepted = false;
+          if (!Object.prototype.hasOwnProperty.call(row.payload, params.p_key)) {
+            row.payload[params.p_key] = { v: params.p_value, at: now };
+            accepted = true;
+            row.progress = Object.keys(row.payload).length;
+            row.total = params.p_total;
+            if (row.progress >= row.total && !row.submitted) { row.submitted = true; row.submitted_at = now; row.first_submitted_at = row.first_submitted_at || now; }
+            row.ts = Date.now();
+            row.updated_at = now;
+          }
           write('homework', rows);
-          return [{ submitted: row.submitted, submitted_at: row.submitted_at, first_submitted_at: row.first_submitted_at, updated_at: row.updated_at }];
+          return [{ accepted, progress: row.progress, keys: Object.keys(row.payload).sort() }];
         }
         teacherOnly();
         if (name === 'ck_publish') {
           const rows = read('classrooms');
           rows.forEach((row) => { if (row.course === params.p_course) row.is_current = false; });
           const now = new Date().toISOString();
-          const room = { id: Date.now(), course: params.p_course, code: newCode(), name: String(params.p_name).trim(),
+          const room = { id: Math.max(Date.now(), ...rows.map((row) => Number(row.id) + 1 || 0)), course: params.p_course, code: newCode(), name: String(params.p_name).trim(),
             chapter: params.p_chapter, is_current: true, submissions_open: true, danmaku: 'off', created_at: now, updated_at: now };
           rows.push(room);
           write('classrooms', rows);
@@ -320,6 +340,7 @@
     today,
     COLLECTIONS,
     isClosedError,
+    isDuplicateError,
     normalizeCode,
     unitOf,
     create(config) {

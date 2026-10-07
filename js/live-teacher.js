@@ -246,7 +246,7 @@
   });
   $('[data-toggle-open]').addEventListener('click', () => {
     const open = !state.room.submissions_open;
-    if (!open && !window.confirm('结束提交后，学生不能再提交投票、作业和弹幕（已提交的保留）。确定结束吗？')) return;
+    if (!open && !window.confirm('结束提交后，学生不能再递交作答、发弹幕（已递交的保留）。确定结束吗？')) return;
     roomAction(open ? '重新开放提交' : '结束提交', () => backend.rpc('ck_set_open', { p_classroom: Number(state.room.id), p_open: open }));
   });
   $('[data-stop-room]').addEventListener('click', () => {
@@ -373,15 +373,48 @@
     });
     return Array.from(map.values());
   };
-  // 概念学习课程：每人一份作业快照（同一学号在两台设备上作答时取最新的一份）
-  const homeworkRows = () => window.ClassLive.latest(state.docs.homework, (doc) => doc.sid);
+  // 概念学习课程：每人一份作业（逐题递交，每题只算第一次）。同一学号偶有多行（两台设备同时第一次递交）时合并，各题取最早递交的
+  const isEntry = (entry) => entry && typeof entry === 'object' && 'v' in entry && 'at' in entry;
+  const homeworkRows = () => {
+    const groups = new Map();
+    state.docs.homework.forEach((doc) => { const list = groups.get(doc.sid) || []; list.push(doc); groups.set(doc.sid, list); });
+    return Array.from(groups.values()).map((list) => {
+      list.sort((a, b) => Number(a.id) - Number(b.id));
+      if (list.length === 1) return list[0];
+      const payload = {};
+      list.forEach((doc) => Object.entries(doc.payload || {}).forEach(([key, entry]) => {
+        if (!payload[key] || (isEntry(entry) && isEntry(payload[key]) && millis(entry.at) < millis(payload[key].at))) payload[key] = entry;
+      }));
+      const progress = Object.keys(payload).length;
+      const total = Math.max(...list.map((doc) => doc.total || 0));
+      return { ...list[0], id: list.map((doc) => doc.id).join('+'), payload, progress, total, submitted: total > 0 && progress >= total,
+        submitted_at: list.map((doc) => doc.submitted_at).filter(Boolean).sort()[0] || null,
+        ts: Math.max(...list.map((doc) => doc.ts || 0)), updated_at: list.map((doc) => doc.updated_at).sort().pop() };
+    });
+  };
+  // 章节案例课程：每人递交过的题目（投票、推演每轮、配对整体、每道文字题各算一题）
+  const caseKey = (doc) => (/^match-/.test(doc.item) ? `${doc.case}:match` : `${doc.case}:${doc.item}`);
+  const roomTotal = () => roomCases().reduce((sum, item) => sum + 2 + item.sim.rounds.length + (item.matching.clues.length ? 1 : 0) + item.items.length, 0);
+  const caseProgress = () => {
+    const cases = new Set(roomCases().map((item) => item.number));
+    const map = new Map();
+    [...state.docs.choices, ...state.docs.answers].filter((doc) => cases.has(doc.case)).forEach((doc) => {
+      const row = map.get(doc.sid) || { keys: new Set(), ts: 0 };
+      row.keys.add(caseKey(doc));
+      row.ts = Math.max(row.ts, doc.ts || 0);
+      map.set(doc.sid, row);
+    });
+    return map;
+  };
+  // 已全部递交：学号 → 最后一次递交的时间
   const submissions = () => {
     const map = new Map();
     if (CONCEPT) {
       homeworkRows().forEach((doc) => { if (doc.submitted) map.set(doc.sid, millis(doc.submitted_at) || doc.ts || 0); });
       return map;
     }
-    state.docs.answers.forEach((doc) => { if ((doc.ts || 0) > (map.get(doc.sid) || 0)) map.set(doc.sid, doc.ts || 0); });
+    const total = roomTotal();
+    caseProgress().forEach((row, sid) => { if (total && row.keys.size >= total) map.set(sid, row.ts); });
     return map;
   };
   function renderStats() {
@@ -395,7 +428,9 @@
   $('[data-checkin-search]').addEventListener('input', renderCheckins);
   function renderCheckins() {
     const submitted = submissions();
-    const progress = new Map(CONCEPT ? homeworkRows().map((doc) => [doc.sid, doc]) : []);
+    const total = CONCEPT ? 0 : roomTotal();
+    const progress = new Map(CONCEPT ? homeworkRows().map((doc) => [doc.sid, { done: doc.progress, total: doc.total }])
+      : Array.from(caseProgress().entries()).map(([sid, row]) => [sid, { done: row.keys.size, total }]));
     const query = $('[data-checkin-search]').value.trim();
     const rows = students().filter((row) => !query || [row.sid, row.class_name, row.group_name, ...row.names].some((value) => String(value || '').includes(query)));
     $('[data-checkin-rows]').innerHTML = rows.map((row, index) => {
@@ -403,9 +438,9 @@
       const remark = names.length > 1 ? `同一学号填写了不同姓名：${names.join('、')}` : '';
       const done = submitted.get(row.sid);
       const work = progress.get(row.sid);
-      const pending = work ? `已作答 ${work.progress}/${work.total} · 未提交` : CONCEPT ? '未开始' : '未提交';
+      const pending = work ? `已递交 ${work.done}/${work.total} 题` : '还没有递交';
       return `<tr><td>${index + 1}</td><td>${esc(row.sid)}</td><td>${esc(names[0])}</td><td>${esc(row.class_name)}</td><td>${esc(row.group_name)}</td><td>${clock(row.first)}</td>
-        <td class="${done ? 'ok' : 'warn'}">${done ? `已提交 ${clock(done)}` : pending}</td><td class="warn">${esc(remark)}</td></tr>`;
+        <td class="${done ? 'ok' : 'warn'}">${done ? `全部递交 ${clock(done)}` : pending}</td><td class="warn">${esc(remark)}</td></tr>`;
     }).join('') || '<tr><td colspan="8" class="empty">还没有学生加入这个课堂。把课堂码或加入链接展示给学生。</td></tr>';
   }
 
@@ -449,7 +484,7 @@
     const postTotal = sum(post);
     const poll = `
       <article class="tw-card wide">
-        <h2>前测与后测投票 <small>前测 ${preTotal} 人 · 后测 ${postTotal} 人</small></h2>
+        <h2>前测与后测投票 <small>前测 ${preTotal} 人 · 后测 ${postTotal} 人${showRef ? ` · 选中参考答案：前测 ${pct(pre.get(String(item.poll.reference)) || 0, preTotal)}%，后测 ${pct(post.get(String(item.poll.reference)) || 0, postTotal)}%` : ''}</small></h2>
         <p class="tw-q">${esc(item.poll.question)}</p>
         ${item.poll.options.map((option, index) => {
           const key = String(index + 1);
@@ -462,7 +497,7 @@
       <article class="tw-card wide">
         <h2>证据—理论配对</h2>
         <ol class="tw-legend">${item.matching.legend.map((text, index) => `<li><b>K${index + 1}</b>${esc(text)}</li>`).join('')}</ol>
-        <table class="tw-table compact"><thead><tr><th>事实线索</th>${[1, 2, 3, 4].map((k) => `<th>K${k}</th>`).join('')}<th>人数</th></tr></thead><tbody>
+        <table class="tw-table compact"><thead><tr><th>事实线索</th>${[1, 2, 3, 4].map((k) => `<th>K${k}</th>`).join('')}<th>人数</th>${showRef ? '<th>对应参考</th>' : ''}</tr></thead><tbody>
         ${item.matching.clues.map((clue, index) => {
           const counts = tally(docs, `match-${index + 1}`);
           const total = sum(counts);
@@ -470,7 +505,7 @@
             const mark = showRef ? (clue.answer === k ? ' is-answer' : clue.accept.includes(k) ? ' is-accept' : '') : '';
             const count = counts.get('K' + k) || 0;
             return `<td class="tw-cell${mark}">${count}<small>${pct(count, total)}%</small></td>`;
-          }).join('')}<td>${total}</td></tr>`;
+          }).join('')}<td>${total}</td>${showRef ? `<td>${pct(counts.get('K' + clue.answer) || 0, total)}%<small>可成立 ${pct(clue.accept.reduce((sum, k) => sum + (counts.get('K' + k) || 0), 0), total)}%</small></td>` : ''}</tr>`;
         }).join('')}</tbody></table>
         ${showRef ? '<p class="tw-hint">深色格为参考对应，浅色格为可以成立的答案。</p>' : ''}
       </article>`;
@@ -480,7 +515,8 @@
         ${item.sim.rounds.map((round, index) => {
           const counts = tally(docs, `sim-${index + 1}`);
           const total = sum(counts);
-          return `<div class="tw-round"><h3>${esc(round.title)} <small>${total} 人</small></h3><p class="tw-q">${esc(round.question)}</p>
+          const best = round.options.find((option) => option.reference);
+          return `<div class="tw-round"><h3>${esc(round.title)} <small>${total} 人${showRef && best ? ` · 选中参考方案 ${pct(counts.get(best.letter) || 0, total)}%` : ''}</small></h3><p class="tw-q">${esc(round.question)}</p>
             ${round.options.map((option) => `<div class="tw-option single"><div class="tw-option-label">${star(option.reference)}<span>${option.letter}</span>${esc(option.text)}</div>${bar(counts.get(option.letter) || 0, total)}</div>`).join('')}</div>`;
         }).join('')}
       </article>`;
@@ -538,7 +574,6 @@
       { id: 'discussion', label: '小组辨析' },
       { id: 'exit', label: '出门测' },
       ...(unit.poll ? [{ id: 'poll', label: '课堂投票' }] : []),
-      { id: 'selfrate', label: '概念小结 · 自评' },
     ];
   }
 
@@ -596,7 +631,7 @@
     const chain = unit.chain;
     const order = S.chain && Array.isArray(S.chain.order) ? S.chain.order.map(Number) : null;
     const valid = order && order.length === chain.perm.length && order.slice().sort((a, b) => a - b).every((v, i) => v === i);
-    const touched = valid && order.some((v, i) => v !== chain.shuffle[i]);
+    const touched = valid && (S.chain.submitted || order.some((v, i) => v !== chain.shuffle[i]));
     chain.texts.forEach((t, pos) => {
       const placed = touched ? chain.perm[order[pos]] : null;
       items.push({ section: 'chain', key: `chain.${pos}`, step: '概念串联', label: `第 ${pos + 1} 位`, prompt: t, type: 'order', value: placed,
@@ -617,8 +652,7 @@
     const auto = items.filter((item) => item.ref != null);
     return {
       items,
-      selfrate: S.selfrate && typeof S.selfrate === 'object' ? S.selfrate : {},
-      exitSubmitted: Boolean(exit.submitted),
+      exitSubmitted: exitItems.length > 0 && exitItems.every((item) => item.value != null),
       exitRight: exitItems.filter((item) => item.correct).length,
       exitAnswered: exitItems.filter((item) => item.value != null).length,
       exitTotal: exitItems.length,
@@ -628,6 +662,47 @@
     };
   }
 
+  // 递交记录 {题目编号: {v, at}} → 与页面作答记录相同的结构，交给 gradeHomework；旧格式（整页快照）原样使用
+  function stateOf(unit, payload) {
+    const P = payload && typeof payload === 'object' ? payload : {};
+    const entries = Object.entries(P).filter(([, entry]) => isEntry(entry));
+    if (!entries.length) return { S: P, at: {} };
+    const S = { texts: {}, exit: { answers: [] } };
+    const at = {};
+    entries.forEach(([key, entry]) => {
+      const value = entry.v;
+      at[key] = entry.at;
+      let match = key.match(/^(k\d+)\.(discover|check|apply|challenge|explain)$/);
+      if (match) {
+        const box = S[match[1]] || (S[match[1]] = {});
+        const concept = unit.concepts.find((k) => k.id === match[1]);
+        if (match[2] === 'discover') box.discover = { choice: value };
+        else if (match[2] === 'check') box.check = Array.isArray(value) ? { sel: value } : { choice: value };
+        else if (match[2] === 'apply') box.apply = concept && concept.apply.type === 'sort' ? { sel: value } : { vals: value };
+        else if (match[2] === 'challenge') box.challenge = { val: value };
+        else S.texts[key] = value;
+        return;
+      }
+      match = key.match(/^exit\.(\d+)$/);
+      if (match) S.exit.answers[Number(match[1])] = value;
+      else if (key === 'chain') S.chain = { order: value, submitted: true };
+      else if (key === 'discussion') { S.discussion = { stance: value && value.stance }; S.texts['discussion.reason'] = value && value.reason; }
+      else if (key === 'discussion.after') S.texts['discussion.after'] = value;
+      else if (key === 'poll') S.poll = { choice: value };
+    });
+    return { S, at };
+  }
+  // 逐题记录的编号 → 递交时的题目编号（辨一辨、分一分等一组小题一起递交）
+  const submitKey = (itemKey) => itemKey
+    .replace(/^(k\d+\.(check|apply))\.\d+$/, '$1')
+    .replace(/^chain\.\d+$/, 'chain')
+    .replace(/^discussion\.(stance|reason)$/, 'discussion');
+  const gradeOf = (unit, payload) => {
+    const { S, at } = stateOf(unit, payload);
+    const result = gradeHomework(unit, S);
+    result.items.forEach((item) => { item.at = at[submitKey(item.key)] || ''; });
+    return result;
+  };
   const gradeCache = new Map();
   const peUnit = () => (state.room ? unitMap.get(state.room.chapter) : null);
   function gradedRows() {
@@ -635,7 +710,7 @@
     if (!unit) return [];
     return homeworkRows().map((doc) => {
       const key = `${unit.unit}|${doc.id}|${doc.sid}|${doc.updated_at || doc.ts}`;
-      if (!gradeCache.has(key)) gradeCache.set(key, gradeHomework(unit, doc.payload));
+      if (!gradeCache.has(key)) gradeCache.set(key, gradeOf(unit, doc.payload));
       return { doc, ...gradeCache.get(key) };
     });
   }
@@ -707,8 +782,8 @@
     const average = rows.length ? Math.round(rows.reduce((sum, row) => sum + (row.doc.total ? row.doc.progress / row.doc.total : 0), 0) / rows.length * 100) : 0;
     const exitDone = rows.filter((row) => row.exitSubmitted);
     const exitAverage = exitDone.length ? (exitDone.reduce((sum, row) => sum + row.exitRight, 0) / exitDone.length).toFixed(1) : '—';
-    summary.textContent = `${chapterLabel(state.room)}：已同步作业 ${rows.length} 人（已提交 ${submitted} 人），平均完成 ${average}%；`
-      + `出门测已交卷 ${exitDone.length} 人${showRef ? `，平均答对 ${exitAverage} / ${unit.exit.length} 题` : ''}。每人取最新一次同步，约每 5 秒刷新。`;
+    summary.textContent = `${chapterLabel(state.room)}：已有 ${rows.length} 人递交（${submitted} 人全部递交），平均递交 ${average}% 的题目；`
+      + `出门测 ${exitDone.length} 人递交了全部 ${unit.exit.length} 题${showRef ? `，平均答对 ${exitAverage} 题` : ''}。每题只算第一次递交，约每 5 秒刷新。`;
     const entries = new Map();
     rows.forEach((row) => row.items.forEach((item) => {
       const list = entries.get(item.key) || [];
@@ -732,23 +807,15 @@
           <td>${stat.answered} / ${rows.length}</td>${showRef ? `<td>${bar(stat.right, stat.answered)}</td>` : ''}</tr>`).join('')}</tbody></table>`;
       return;
     }
-    if (section === 'selfrate') {
-      view.innerHTML = `<article class="tw-card wide"><h2>概念小结 · 自评 <small>${rows.length} 人</small></h2>${unit.concepts.map((k, index) => `
-        <div class="tw-round"><h3>概念 ${index + 1} · ${esc(k.name)}</h3>${unit.selfCheck.map((label, j) => {
-          const count = rows.filter((row) => row.selfrate[`${k.id}.${j}`]).length;
-          return `<div class="tw-option single"><div class="tw-option-label">${esc(label)}</div>${bar(count, rows.length)}</div>`;
-        }).join('')}</div>`).join('')}</article>`;
-      return;
-    }
     const chosen = templates.filter((item) => item.section === section);
     let extra = '';
     if (section === 'chain') {
       const done = rows.filter((row) => row.items.some((item) => item.section === 'chain' && item.value != null));
       const perfect = done.filter((row) => row.items.filter((item) => item.section === 'chain').every((item) => item.correct)).length;
-      extra = `<p class="tw-hint">已调整顺序 ${done.length} 人${showRef ? `；全部排对 ${perfect} 人。下面按正确顺序列出每个位置，条形为该位置放对的比例` : ''}。</p>`;
+      extra = `<p class="tw-hint">已递交 ${done.length} 人${showRef ? `；全部排对 ${perfect} 人。下面按正确顺序列出每个位置，条形为该位置放对的比例` : ''}。</p>`;
     }
     if (section === 'exit') {
-      extra = `<p class="tw-hint">已交卷 ${rows.filter((row) => row.exitSubmitted).length} 人；统计包含尚未交卷同学已选的答案。</p>`;
+      extra = `<p class="tw-hint">${rows.filter((row) => row.exitSubmitted).length} 人递交了全部 ${unit.exit.length} 题；各题按已递交的人数统计。</p>`;
     }
     const label = (unitSections(unit).find((s) => s.id === section) || {}).label || '';
     let html = '';
@@ -758,7 +825,7 @@
       if (item.step !== lastStep && unit.concepts.some((k) => k.id === section)) { html += `<h2 class="tw-step">${esc(item.step)}</h2>`; lastStep = item.step; }
       html += itemCard(item, entries.get(item.key) || [], showRef);
     });
-    view.innerHTML = `<article class="tw-card wide"><h2>${esc(label)} <small>${rows.length} 人已同步</small></h2>${extra}${html}</article>`;
+    view.innerHTML = `<article class="tw-card wide"><h2>${esc(label)} <small>${rows.length} 人已递交</small></h2>${extra}${html}</article>`;
   }
 
   function renderConceptStudents() {
@@ -780,15 +847,15 @@
       const open = state.openStudents.has(person.sid);
       if (!row) {
         return `<tr><td>${esc(person.sid)}</td><td>${esc(person.name)}</td><td>${esc(person.class_name)}</td><td>${esc(person.group_name)}</td>
-          <td colspan="4" class="warn">已加入，还没有作答</td></tr>`;
+          <td colspan="4" class="warn">已加入，还没有递交</td></tr>`;
       }
       const doc = row.doc;
-      const exit = row.exitSubmitted ? `已交卷 · 答对 ${row.exitRight}/${row.exitTotal}` : row.exitAnswered ? `未交卷（已答 ${row.exitAnswered} 题）` : '未作答';
+      const exit = row.exitAnswered ? `已递交 ${row.exitAnswered}/${row.exitTotal} · 答对 ${row.exitRight}` : '未递交';
       const main = `<tr class="tw-pe-row${open ? ' is-open' : ''}" data-pe-sid="${esc(person.sid)}" tabindex="0" aria-expanded="${open}">
         <td>${open ? '▾' : '▸'} ${esc(doc.sid)}</td><td>${esc(doc.name)}</td><td>${esc(doc.class_name || '')}</td><td>${esc(doc.group_name || '')}</td>
-        <td>${doc.progress}/${doc.total}<small class="tw-sub">自动判分题答对 ${row.autoRight}/${row.autoTotal}</small></td>
+        <td>${doc.progress}/${doc.total} 题<small class="tw-sub">自动判分小题答对 ${row.autoRight}/${row.autoTotal}</small></td>
         <td class="${row.exitSubmitted ? 'ok' : 'warn'}">${exit}</td>
-        <td class="${doc.submitted ? 'ok' : 'warn'}">${doc.submitted ? `已提交 ${clock(millis(doc.submitted_at))}` : '未提交'}</td><td>${clock(doc.ts)}</td></tr>`;
+        <td class="${doc.submitted ? 'ok' : 'warn'}">${doc.submitted ? `是 ${clock(millis(doc.submitted_at))}` : '否'}</td><td>${clock(doc.ts)}</td></tr>`;
       if (!open) return main;
       let detail = '';
       let lastSection = '';
@@ -796,16 +863,14 @@
         if (item.section !== lastSection) { detail += `${lastSection ? '</ul>' : ''}<h4>${esc(names.get(item.section))}</h4><ul class="tw-marks">`; lastSection = item.section; }
         const cls = item.value == null ? 'is-none' : item.correct === true ? 'is-ok' : item.correct === false ? 'is-bad' : '';
         const mark = item.value == null ? '—' : item.correct === true ? '✓' : item.correct === false ? '✗' : '';
-        const answer = item.value == null ? '未作答' : item.type === 'text' ? `<span class="tw-text">${esc(item.shown)}</span>` : esc(item.shown);
+        const answer = item.value == null ? '未递交' : item.type === 'text' ? `<span class="tw-text">${esc(item.shown)}</span>` : esc(item.shown);
         const ref = item.correct === false ? `<small>参考：${esc(item.refShown)}</small>` : '';
-        detail += `<li class="${cls}${item.type === 'text' ? ' is-text' : ''}"><b>${mark}</b><span class="tw-mark-label" title="${esc(item.prompt || '')}">${esc(item.label)}</span><span>${answer}${ref}</span></li>`;
+        // 一组小题一起递交的，只在第一小题后注明递交时间
+        const firstOfGroup = item.key === submitKey(item.key) || /\.0$/.test(item.key) || item.key === 'discussion.stance';
+        const when = item.at && firstOfGroup ? `<small class="tw-at">${clock(millis(item.at))} 递交</small>` : '';
+        detail += `<li class="${cls}${item.type === 'text' ? ' is-text' : ''}"><b>${mark}</b><span class="tw-mark-label" title="${esc(item.prompt || '')}">${esc(item.label)}</span><span>${answer}${ref}${when}</span></li>`;
       });
       detail += '</ul>';
-      const rates = unit.concepts.map((k) => {
-        const checked = unit.selfCheck.filter((_, j) => row.selfrate[`${k.id}.${j}`]).length;
-        return `${esc(k.name)} ${checked}/${unit.selfCheck.length}`;
-      }).join('；');
-      detail += `<h4>概念小结 · 自评（勾选数）</h4><p class="tw-hint">${rates}</p>`;
       return `${main}<tr class="tw-pe-detail"><td colspan="8">${detail}</td></tr>`;
     }).join('') || '<tr><td colspan="8" class="empty">还没有学生加入这个课堂。</td></tr>';
   }
@@ -946,20 +1011,21 @@
         const homework = window.ClassLive.latest(docs.homework, (d) => `${d.classroom}|${d.sid}`)
           .sort((a, b) => String(a.classroom).localeCompare(String(b.classroom)) || String(a.sid).localeCompare(String(b.sid)));
         const graded = homework.map((d) => ({ d, unit: unitMap.get(d.unit) })).filter((entry) => entry.unit)
-          .map((entry) => ({ ...entry, result: gradeHomework(entry.unit, entry.d.payload) }));
+          .map((entry) => ({ ...entry, result: gradeOf(entry.unit, entry.d.payload) }));
         const unitName = (unit) => `案例${unit.number} ${unit.title}`;
         const who4 = (d) => [d.sid, d.name, d.class_name, d.group_name];
-        download(`${prefix}_作业汇总.csv`, csv([['课堂', '课堂码', '学号', '姓名', '班级', '小组', '案例', '已作答', '总项数',
-          '自动判分题答对', '自动判分题已答', '自动判分题总数', '出门测答对', '出门测交卷', '提交作业', '提交时间', '最后同步'],
+        download(`${prefix}_作业汇总.csv`, csv([['课堂', '课堂码', '学号', '姓名', '班级', '小组', '案例', '已递交题数', '题目总数',
+          '自动判分小题答对', '自动判分小题已答', '自动判分小题总数', '出门测答对', '出门测已递交', '全部递交', '全部递交时间', '最后递交'],
           ...graded.map(({ d, unit, result }) => [...roomCols(d), ...who4(d), unitName(unit), d.progress, d.total,
-            result.autoRight, result.autoAnswered, result.autoTotal, `${result.exitRight}/${result.exitTotal}`, result.exitSubmitted ? '已交卷' : '未交卷',
-            d.submitted ? '已提交' : '未提交', d.submitted_at ? `${isoDay(millis(d.submitted_at))} ${clock(millis(d.submitted_at))}` : '',
+            result.autoRight, result.autoAnswered, result.autoTotal, `${result.exitRight}/${result.exitTotal}`, `${result.exitAnswered}/${result.exitTotal}`,
+            d.submitted ? '是' : '否', d.submitted_at ? `${isoDay(millis(d.submitted_at))} ${clock(millis(d.submitted_at))}` : '',
             `${isoDay(d.ts)} ${clock(d.ts)}`])]));
         const sectionName = (unit, id) => (unitSections(unit).find((section) => section.id === id) || {}).label || id;
-        const verdict = (item) => (item.value == null ? '未作答' : item.correct === true ? '正确' : item.correct === false ? '错误' : '不判分');
-        download(`${prefix}_作业明细.csv`, csv([['课堂', '课堂码', '学号', '姓名', '班级', '小组', '案例', '部分', '题目', '题干', '作答', '参考答案', '判定'],
+        const verdict = (item) => (item.value == null ? '未递交' : item.correct === true ? '正确' : item.correct === false ? '错误' : '不判分');
+        const when = (at) => (at ? `${isoDay(millis(at))} ${clock(millis(at))}` : '');
+        download(`${prefix}_作业明细.csv`, csv([['课堂', '课堂码', '学号', '姓名', '班级', '小组', '案例', '部分', '题目', '题干', '作答', '参考答案', '判定', '递交时间'],
           ...graded.flatMap(({ d, unit, result }) => result.items.map((item) => [...roomCols(d), ...who4(d), unitName(unit),
-            sectionName(unit, item.section), item.label, item.prompt, item.shown, item.refShown, verdict(item)]))]));
+            sectionName(unit, item.section), item.label, item.prompt, item.shown, item.refShown, verdict(item), when(item.at)]))]));
         download(`${prefix}_弹幕记录.csv`, danmakuCsv());
         status.textContent = `已导出${label}：加入 ${checkins.length} 条、作业 ${graded.length} 份、弹幕 ${danmaku.length} 条（作业明细为每人每题一行）。`;
         return;

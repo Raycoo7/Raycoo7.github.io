@@ -171,3 +171,4 @@ em { color: var(--muted); font-style: normal; font-size: 14px; white-space: nowr
 .tw-mark-label { color: var(--muted); }
 .tw-marks .tw-text { white-space: pre-wrap; }
 .tw-marks li.is-text { grid-column: 1 / -1; }
+.tw-table td small, .tw-at { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
