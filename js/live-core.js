@@ -5,12 +5,13 @@
  *   off       —— 不连接后台（页面照常可用，选择与作答只保存在本机）
  * 表：加入 ck_checkins、选择 ck_choices、作答 ck_answers（只增不改，教师端取每人最新一条）、课堂 ck_classrooms
  * 函数：ck_join（学生凭课堂码进入）、ck_publish / ck_set_current / ck_set_open（教师管理课堂）、
- *       ck_submit_answer（概念学习课程逐题“递交”，每题只收第一次）
+ *       ck_submit_answer（概念学习课程逐题“递交”，每题只收第一次）、
+ *       ck_create_class / ck_rename_class / ck_save_roster / ck_move_classroom / ck_delete_class（教师管理班级与点名册）
  */
 (function () {
   'use strict';
   const COLLECTIONS = { checkins: 'ck_checkins', choices: 'ck_choices', answers: 'ck_answers', classrooms: 'ck_classrooms', danmaku: 'ck_danmaku',
-    homework: 'ck_homework' };
+    homework: 'ck_homework', classes: 'ck_classes' };
 
   // 以北京时间的日期作为“这节课”的标识，例如 2026-09-30
   const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
@@ -290,12 +291,13 @@
           return [{ accepted, progress: row.progress, keys: Object.keys(row.payload).sort() }];
         }
         teacherOnly();
+        const sameGroup = (row, course, classId) => row.course === course && String(row.class_id || '') === String(classId || '');
         if (name === 'ck_publish') {
           const rows = read('classrooms');
-          rows.forEach((row) => { if (row.course === params.p_course) row.is_current = false; });
+          rows.forEach((row) => { if (sameGroup(row, params.p_course, params.p_class)) row.is_current = false; });
           const now = new Date().toISOString();
           const room = { id: Math.max(Date.now(), ...rows.map((row) => Number(row.id) + 1 || 0)), course: params.p_course, code: newCode(), name: String(params.p_name).trim(),
-            chapter: params.p_chapter, is_current: true, submissions_open: true, danmaku: 'off', created_at: now, updated_at: now };
+            chapter: params.p_chapter, is_current: true, submissions_open: true, danmaku: 'off', class_id: params.p_class || null, created_at: now, updated_at: now };
           rows.push(room);
           write('classrooms', rows);
           return { ...room };
@@ -303,11 +305,48 @@
         if (name === 'ck_set_current') {
           return updateRoom(params.p_classroom, (room, rows) => {
             if (params.p_current) {
-              rows.forEach((row) => { if (row.course === room.course) row.is_current = false; });
+              rows.forEach((row) => { if (sameGroup(row, room.course, room.class_id)) row.is_current = false; });
               room.submissions_open = true;
             }
             room.is_current = Boolean(params.p_current);
           });
+        }
+        if (name === 'ck_create_class') {
+          const rows = read('classes');
+          const nameText = String(params.p_name || '').trim();
+          if (!nameText) throw new Error('请填写班级名称');
+          if (rows.some((row) => row.course === params.p_course && row.name === nameText)) throw new Error('duplicate key value violates unique constraint (mock)');
+          const now = new Date().toISOString();
+          const row = { id: Math.max(Date.now(), ...rows.map((item) => Number(item.id) + 1 || 0)), course: params.p_course, name: nameText, roster: [], created_at: now, updated_at: now };
+          rows.push(row);
+          write('classes', rows);
+          return { ...row };
+        }
+        const updateClass = (id, change) => {
+          const rows = read('classes');
+          const row = rows.find((item) => String(item.id) === String(id));
+          if (!row) throw new Error('班级不存在');
+          change(row);
+          row.updated_at = new Date().toISOString();
+          write('classes', rows);
+          return { ...row };
+        };
+        if (name === 'ck_rename_class') return updateClass(params.p_class, (row) => { row.name = String(params.p_name || '').trim(); });
+        if (name === 'ck_save_roster') return updateClass(params.p_class, (row) => { row.roster = params.p_roster; row.roster_updated_at = new Date().toISOString(); });
+        if (name === 'ck_move_classroom') {
+          return updateRoom(params.p_classroom, (room, rows) => {
+            if (room.is_current && rows.some((row) => row.id !== room.id && row.is_current && sameGroup(row, room.course, params.p_class))) {
+              throw new Error('目标班级已有当前课堂，请先停止其中一个');
+            }
+            room.class_id = params.p_class;
+          });
+        }
+        if (name === 'ck_delete_class') {
+          const ids = read('classrooms').filter((row) => String(row.class_id || '') === String(params.p_class)).map((row) => row.id);
+          ['checkins', 'choices', 'answers', 'danmaku', 'homework'].forEach((kind) => write(kind, read(kind).filter((row) => !ids.includes(row.classroom))));
+          write('classrooms', read('classrooms').filter((row) => !ids.includes(row.id)));
+          write('classes', read('classes').filter((row) => String(row.id) !== String(params.p_class)));
+          return ids.length;
         }
         if (name === 'ck_set_open') return updateRoom(params.p_classroom, (room) => { room.submissions_open = Boolean(params.p_open); });
         if (name === 'ck_set_danmaku') return updateRoom(params.p_classroom, (room) => { room.danmaku = params.p_mode; });
@@ -348,6 +387,17 @@
       if (config.provider === 'cloudbase') return cloudbaseProvider(config);
       if (config.provider === 'mock') return mockProvider(config);
       throw new Error('未知的课堂后台：' + config.provider);
+    },
+    // 投屏页选当前课堂：一门课的几个班级可能同时有当前课堂。优先老师在工作台选的班级（地址 ?class= 或本机记住的），
+    // 再优先与本页章节（案例）相同的；都对不上时取第一个（页面会提示“不是本章”）
+    pickRoom(rooms, course, unit) {
+      const current = rooms.filter((row) => row.is_current);
+      if (!current.length) return null;
+      let wanted = new URLSearchParams(location.search).get('class');
+      if (!wanted) { try { wanted = localStorage.getItem(`teacher:class:${course}`); } catch (error) { wanted = null; } }
+      const mine = wanted ? current.filter((row) => String(row.class_id || '') === String(wanted)) : [];
+      const pool = mine.length ? mine : current;
+      return pool.find((row) => row.chapter === unit) || pool[0];
     },
     // 每人每项只保留最新一条（按时间）
     latest(docs, keyOf) {

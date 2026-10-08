@@ -26,6 +26,7 @@
   const HERE = CONCEPT ? '本案例' : '本章';
   const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pct = (value, total) => (total ? Math.round(value / total * 100) : 0);
+  const WRONG_ALERT = 40;   // 证据—理论配对：错误率达到这一比例时标红
   const text = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
   const short = (value, size) => (value.length > size ? `${value.slice(0, size)}…` : value);
 
@@ -57,6 +58,7 @@
   .lv-table td.is-ref { color: #fff; background: var(--teal, #23655f); font-weight: 800; }
   .lv-table td.is-alt { background: rgba(35, 101, 95, .16); }
   .lv-table small { display: block; opacity: .75; font-size: 11px; }
+  .lv-table td.lv-wrong.is-high { color: #a4492d; background: rgba(164, 73, 45, .12); font-weight: 800; }
   .lv-values { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
   .lv-values span { padding: 3px 9px; border: 1px solid rgba(70, 51, 34, .2); border-radius: 6px; background: #fff; font-size: 14px; }
   .lv-values span.is-ok { border-color: var(--teal, #23655f); background: rgba(35, 101, 95, .12); }
@@ -127,6 +129,14 @@
           cell.querySelectorAll('small, p').forEach((el) => el.remove());
           return { item: `match-${index + 1}`, text: text(cell), answer: row.dataset.answer || '', accept: (row.dataset.accept || '').match(/\d/g) || [] };
         }),
+      });
+    });
+    // 迁移任务“选一选”：参考 K 与可以成立的 K 都算对
+    document.querySelectorAll('[data-transfer-choice]').forEach((box) => {
+      addBlock(box.querySelector('.transfer-options'), {
+        kind: 'poll', case: caseOf(box), item: 'transfer-k', ref: box.dataset.answer || null,
+        accept: (box.dataset.accept || '').split(',').filter(Boolean),
+        options: Array.from(box.querySelectorAll('.transfer-options li')).map((li) => ({ key: li.dataset.k, label: li.dataset.k, text: text(li.querySelector('strong')) })),
       });
     });
     document.querySelectorAll('section.ix-sim[data-sim]').forEach((section) => {
@@ -252,7 +262,9 @@
       const all = total(map);
       countEl.textContent = `已递交 ${all} 人`;
       if (!block.open) return null;
-      return (block.ref ? rateLine(map.get(String(block.ref)) || 0, all) : '') + optionRows(block.options, map, all, block.ref);
+      const accept = block.accept || [];
+      const right = (map.get(String(block.ref)) || 0) + accept.reduce((n, key) => n + (map.get(key) || 0), 0);
+      return (block.ref ? rateLine(right, all, accept.length ? `　（★参考 ${esc(block.ref)}，${accept.map(esc).join('、')} 也可以成立）` : '') : '') + optionRows(block.options, map, all, block.ref);
     }
     if (block.kind === 'prepost') {
       const pre = tally(block.case, 'pre');
@@ -275,16 +287,19 @@
       const answered = Math.max(0, ...block.clues.map((clue) => total(tally(block.case, clue.item))));
       countEl.textContent = `已递交 ${answered} 人`;
       if (!block.open) return null;
-      return `<table class="lv-table"><thead><tr><th>事实线索</th>${[1, 2, 3, 4].map((k) => `<th>K${k}</th>`).join('')}<th>人数</th><th>对应参考</th></tr></thead><tbody>${block.clues.map((clue) => {
+      return `<table class="lv-table"><thead><tr><th>事实线索</th>${[1, 2, 3, 4].map((k) => `<th>K${k}</th>`).join('')}<th>人数</th><th>对应参考</th><th>错误率</th></tr></thead><tbody>${block.clues.map((clue) => {
         const map = tally(block.case, clue.item);
         const all = total(map);
         const alt = clue.accept.reduce((sum, k) => sum + (map.get('K' + k) || 0), 0);
+        // 错误：既不是参考对应、也不是可以成立的答案
+        const wrong = Math.max(0, all - (map.get('K' + clue.answer) || 0) - alt);
         return `<tr><td>${esc(clue.text)}</td>${[1, 2, 3, 4].map((k) => {
           const n = map.get('K' + k) || 0;
           const cls = String(k) === clue.answer ? 'is-ref' : clue.accept.includes(String(k)) ? 'is-alt' : '';
           return `<td class="${cls}">${n}<small>${pct(n, all)}%</small></td>`;
-        }).join('')}<td>${all}</td><td>${pct(map.get('K' + clue.answer) || 0, all)}%${clue.accept.length ? `<small>可成立 ${pct(alt, all)}%</small>` : ''}</td></tr>`;
-      }).join('')}</tbody></table><p class="lv-note">深色格为参考对应，浅色格为也可以成立的答案。</p>`;
+        }).join('')}<td>${all}</td><td>${pct(map.get('K' + clue.answer) || 0, all)}%${clue.accept.length ? `<small>可成立 ${pct(alt, all)}%</small>` : ''}</td>
+          <td class="lv-wrong${all && pct(wrong, all) >= WRONG_ALERT ? ' is-high' : ''}">${pct(wrong, all)}%<small>${wrong} 人</small></td></tr>`;
+      }).join('')}</tbody></table><p class="lv-note">深色格为参考对应，浅色格为也可以成立的答案。错误率＝选了其他理论要点的人数比例（参考对应和可以成立的都不算错）；${WRONG_ALERT}% 及以上标红，值得重点讲评。</p>`;
     }
     return null;
   }
@@ -365,7 +380,7 @@
   async function loadRoom() {
     try {
       const rooms = await backend.fetchAll('classrooms', { course: config.course });
-      room = rooms.find((row) => row.is_current) || null;
+      room = window.ClassLive.pickRoom(rooms, config.course, chapter);
       if (!room) status = '还没有发布课堂，发布后这里显示学生的递交结果。';
       else if (room.chapter !== chapter) status = `当前课堂“${esc(room.name)}”不是${HERE}，这里暂不显示学生结果。`;
       else status = '';
@@ -451,7 +466,7 @@
         list.forEach((row) => Object.entries(row.answers).forEach(([key, entry]) => {
           const [caseNo, item] = key.split(':');
           if (item === 'match' && Array.isArray(entry.v)) entry.v.forEach((value, i) => { if (value) add(`${caseNo}|match-${i + 1}`, `K${value}`); });
-          else if (/^(pre|post|sim-\d+)$/.test(item)) add(`${caseNo}|${item}`, entry.v);
+          else if (/^(pre|post|sim-\d+|transfer-k)$/.test(item)) add(`${caseNo}|${item}`, entry.v);
         }));
         counts = next;
       }

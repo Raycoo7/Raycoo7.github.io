@@ -196,7 +196,8 @@
     if (!q.button.classList.contains('is-confirm')) {
       q.button.classList.add('is-confirm');
       q.button.textContent = '确认递交？';
-      setQ(q, '递交后不能修改，确认请再点一次', 'error');
+      const hint = q.remind ? q.remind() : '';
+      setQ(q, hint ? `${hint}；递交后不能修改，确认请再点一次` : '递交后不能修改，确认请再点一次', 'error');
       clearTimeout(q.timer);
       q.timer = setTimeout(() => {
         q.button.classList.remove('is-confirm');
@@ -279,7 +280,7 @@
   function exportBody() {
     const who = identity.name ? `${esc(identity.name)}（${esc(identity.sid)}${identity.class_name ? ' · ' + esc(identity.class_name) : ''}）` : '未登录';
     let html = `<h1>${esc(document.title)}</h1><p class="meta">${who}　导出时间：${esc(stamp())}${identity.classroom_name && joined ? '　课堂：' + esc(identity.classroom_name) : ''}</p>
-      <p class="meta">本文件由课程网站导出，包含题目、我的作答、递交状态和备注（不含参考答案），供课后复习。</p>`;
+      <p class="meta">本文件由课程网站导出，包含题目、我的作答、递交状态${questions.some((q) => q.extra) ? '、自检' : ''}和备注（不含参考答案），供课后复习。</p>`;
     let section = '';
     questions.forEach((q) => {
       if (q.section !== section) { section = q.section; html += `<h2>${esc(section)}</h2>`; }
@@ -288,10 +289,12 @@
       // 在其他设备递交的题：本设备没有当时的作答，不拿页面上现在的选择冒充
       const lines = entry && entry.other ? ['（本题已在其他设备递交，以第一次递交为准；本设备没有记录当时的作答）'] : q.show(value);
       const note = noteOf(q.key).trim();
+      const extra = q.extra ? q.extra() : null;
       const state = entry ? (entry.other ? '已在其他设备递交' : `已递交 ${entry.at || ''}`) : (lines.length ? '未递交（草稿）' : '未作答');
       html += `<article><h3>${esc(q.title)}<span class="state${entry ? ' ok' : ''}">${esc(state)}</span></h3>
         ${q.prompt ? `<p class="prompt">${esc(q.prompt)}</p>` : ''}
         <div class="answer"><b>我的作答</b>${lines.length ? lines.map((line) => `<p>${esc(line)}</p>`).join('') : '<p class="empty">（未作答）</p>'}</div>
+        ${extra ? `<div class="check"><b>${esc(extra.label)}</b>${extra.lines.map((line) => `<p>${esc(line)}</p>`).join('')}</div>` : ''}
         ${note ? `<div class="note"><b>我的备注</b><p>${esc(note)}</p></div>` : ''}</article>`;
     });
     return html;
@@ -301,8 +304,8 @@
     h3{display:flex;justify-content:space-between;gap:12px;margin:0 0 4px;font-size:16px}.meta{margin:2px 0;color:#6d6259;font-size:13px}
     article{margin:12px 0;padding:12px 14px;border:1px solid #ddd3c4;border-radius:8px;break-inside:avoid;page-break-inside:avoid}
     .state{flex:0 0 auto;color:#a4492d;font-size:13px;font-weight:600}.state.ok{color:#23655f}.prompt{margin:4px 0 8px;color:#4d443c}
-    .answer,.note{margin-top:6px;padding:8px 10px;border-radius:6px;background:#f4f8f6}.note{background:#fbf3e6}
-    .answer b,.note b{display:block;color:#6d6259;font-size:12.5px}.answer p,.note p{margin:2px 0;white-space:pre-wrap}.empty{color:#9a8f85}`;
+    .answer,.note,.check{margin-top:6px;padding:8px 10px;border-radius:6px;background:#f4f8f6}.note{background:#fbf3e6}.check{background:#f1f3f8}
+    .answer b,.note b,.check b{display:block;color:#6d6259;font-size:12.5px}.answer p,.note p,.check p{margin:2px 0;white-space:pre-wrap}.empty{color:#9a8f85}`;
   // 导出文件里附带已递交的作答（JSON），老师可在离线完整版“导入学生文件”统计
   function exportData() {
     const answers = {};
@@ -356,7 +359,7 @@
 
   // ---------- 面板 ----------
   const tools = `<div class="clp-tools"><button type="button" data-cl-next class="is-main"${joined ? '' : ' hidden'}>下一道未递交 ↓</button><button type="button" data-cl-export="html">导出 HTML</button><button type="button" data-cl-export="pdf">导出 PDF</button></div>
-    <p class="clp-hint" data-cl-export-state>导出内容：题目、我的作答、递交状态和备注，方便课后复习。</p>`;
+    <p class="clp-hint" data-cl-export-state>导出内容：题目、我的作答、递交状态${questions.some((q) => q.extra) ? '、自检' : ''}和备注，方便课后复习。</p>`;
   if (!joined) {
     panel.classList.add('is-gate');
     const elsewhere = identity.classroom && identity.course === config.course && identity.chapter && identity.chapter !== unit;
@@ -367,6 +370,7 @@
     document.body.appendChild(panel);
     dodge();
     bindTools();
+    setupMechDanmaku(false, elsewhere ? '本周课堂不在这一页，这里不能发弹幕。' : '进入课堂后才能发弹幕：请先在首页输入老师发布的课堂码。');
     return;
   }
 
@@ -387,6 +391,7 @@
     setupFold();
     bindTools();
     refreshCount();
+    setupMechDanmaku(false, '离线版不能发弹幕，可以在课堂上直接说一说。');
     // 与练习页自带的姓名、学号、班级同步
     const pageField = { name: 'name', sid: 'id', class_name: 'class' };
     panel.querySelectorAll('[data-off]').forEach((input) => {
@@ -457,36 +462,96 @@
   const dmState = panel.querySelector('[data-cl-dm-state]');
   const COOLDOWN = 5;
   let cooling = 0;
+  // 面板和机制图“弹幕接龙”共用每 5 秒一条的冷却；ready() 为 false 的按钮冷却结束后仍保持不可用
+  const dmButtons = [{ button: dmButton, ready: () => true }];
+  const showCooling = () => dmButtons.forEach(({ button, ready }) => {
+    button.textContent = cooling > 0 ? `${cooling}s` : '发送';
+    button.disabled = cooling > 0 || !ready();
+  });
   const cool = () => {
     cooling = COOLDOWN;
-    dmButton.disabled = true;
+    showCooling();
     const tick = setInterval(() => {
       cooling -= 1;
-      dmButton.textContent = cooling > 0 ? `${cooling}s` : '发送';
-      if (cooling <= 0) { clearInterval(tick); dmButton.disabled = false; }
+      showCooling();
+      if (cooling <= 0) clearInterval(tick);
     }, 1000);
-    dmButton.textContent = `${cooling}s`;
   };
+  const dmProblem = (problem) => (Live.isClosedError(problem)
+    ? '现在不能发弹幕：老师未开放弹幕，或发送太快（每 5 秒一条）。'
+    : '发送失败：请检查网络后再试。');
+  async function sendDanmaku(text) {
+    await backend.add('danmaku', { course: config.course, classroom: identity.classroom, name: identity.name, sid: identity.sid, text });
+    cool();
+  }
   dmForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const text = dmInput.value.replace(/\s+/g, ' ').trim().slice(0, 40);
     if (!text || cooling > 0) return;
     dmButton.disabled = true;
     try {
-      await backend.add('danmaku', { course: config.course, classroom: identity.classroom, name: identity.name, sid: identity.sid, text });
+      await sendDanmaku(text);
       dmInput.value = '';
       dmState.textContent = `已发送（${time()}）。若老师开启了审核，通过后才会上屏。`;
       dmState.dataset.state = 'ok';
-      cool();
     } catch (problem) {
       console.error(problem);
       dmButton.disabled = false;
       dmState.dataset.state = 'error';
-      dmState.textContent = Live.isClosedError(problem)
-        ? '现在不能发弹幕：老师未开放弹幕，或发送太快（每 5 秒一条）。'
-        : '发送失败：请检查网络后再试。';
+      dmState.textContent = dmProblem(problem);
     }
   });
+  setupMechDanmaku(true);
+
+  // 机制图“弹幕接龙”：选一个箭头（如 ①→②），用一句话说这两步的关系；
+  // 弹幕带“【案例号箭头】”标签（如【01①→②】），投屏机制图据此把它放到对应节点下面
+  function setupMechDanmaku(enabled, note) {
+    $$('[data-mech-dm]').forEach((box) => {
+      const links = $$('[data-mech-link]', box);
+      const form = $('[data-mech-dm-form]', box);
+      const input = $('input', form);
+      const button = $('button', form);
+      const state = $('[data-mech-dm-state]', box);
+      const say = (text, kind) => { state.textContent = text; state.dataset.state = kind || ''; };
+      shield(box);
+      if (!enabled) {
+        links.forEach((link) => { link.disabled = true; });
+        input.disabled = true;
+        button.disabled = true;
+        say(note);
+        return;
+      }
+      let link = '';
+      dmButtons.push({ button, ready: () => Boolean(link) });
+      links.forEach((item) => { item.disabled = false; });
+      say('先选一个箭头，再写一句话（弹幕会显示你的姓名）。');
+      links.forEach((item) => item.addEventListener('click', () => {
+        link = item.dataset.mechLink;
+        links.forEach((other) => other.setAttribute('aria-pressed', String(other === item)));
+        input.disabled = false;
+        input.placeholder = `${link}：这两步之间是什么关系？`;
+        showCooling();
+        input.focus();
+        say(`已选 ${link}，写一句话后点“发送”（${input.maxLength} 字内）。`);
+      }));
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const text = input.value.replace(/\s+/g, ' ').trim();
+        if (!link) { say('先选一个箭头。', 'error'); return; }
+        if (!text || cooling > 0) return;
+        button.disabled = true;
+        try {
+          await sendDanmaku(`【${box.dataset.case}${link}】${text}`.slice(0, 40));
+          input.value = '';
+          say(`已发送（${time()}），会出现在投屏机制图 ${link} 的位置。若老师开启了审核，通过后才会上屏。`, 'ok');
+        } catch (problem) {
+          console.error(problem);
+          showCooling();
+          say(dmProblem(problem), 'error');
+        }
+      });
+    });
+  }
 
   // ================= 两类课程的题目 =================
   function base() {
@@ -509,7 +574,7 @@
       const options = $$('[data-live-option]', group);
       const item = group.dataset.liveItem;
       const heading = group.matches('li') ? `${textOf(group.querySelector('strong'))}：${textOf(group.querySelector('p'))}` : textOf(group.querySelector('h3'));
-      const kind = item === 'pre' ? '课堂投票 · 前测' : item === 'post' ? '课堂投票 · 后测' : `方案推演 · ${textOf(group.querySelector('strong')) || item}`;
+      const kind = item === 'pre' ? '课堂投票 · 前测' : item === 'post' ? '课堂投票 · 后测' : item === 'transfer-k' ? '迁移任务 · 选一选' : `方案推演 · ${textOf(group.querySelector('strong')) || item}`;
       const labelOf = (value) => { const button = options.find((b) => b.dataset.liveOption === value); return button ? `${textOf(button.querySelector('span'))} ${textOf(button.querySelector('strong') || button)}` : value; };
       list.push({
         key: `${group.dataset.liveCase}:${item}`, section: caseTitle(group), title: kind, prompt: heading,
@@ -554,12 +619,26 @@
       while (holder && !holder.querySelector('h3')) holder = holder.parentElement;
       const heading = holder ? holder.querySelector('h3') : null;
       const number = box.closest('.question-item') ? textOf(box.closest('.question-item').querySelector('.question-number')) : '';
-      const names = { warmup: '导入问题 · 第一判断', transfer: '迁移任务', summary: '三句话结论' };
+      const names = { warmup: '导入问题 · 第一判断', digest: '材料归纳 · 申论式', role: '四方立场 · 我选的角色', 'sim-basis': '方案推演 · 教材依据', transfer: '迁移任务 · 说一说', summary: '三句话结论' };
       const item = box.dataset.liveItem;
       const title = names[item] || (/^myth-/.test(item) ? `常见误区 ${item.slice(5)}` : number || item.toUpperCase());
+      const selfcheck = box.parentElement ? box.parentElement.querySelector('[data-selfcheck]') : null;
       list.push({
         key: `${box.dataset.liveCase}:${item}`, section: caseTitle(box), title, prompt: heading ? textOf(heading) : '',
-        anchor: (bar) => box.appendChild(bar),
+        extra: selfcheck ? () => {
+          const boxes = $$('input[data-selfcheck-item]', selfcheck);
+          const done = boxes.filter((input) => input.checked).length;
+          const steps = boxes.map((input) => `${input.checked ? '☑' : '☐'} ${textOf(input.closest('label').querySelector('b')).replace(/^[①②③④]\s*/, '')}`);
+          return { label: `写完自检（${done}/${boxes.length}）`, lines: [steps.join('　')] };
+        } : null,
+        // 自检没勾全时，在“确认递交？”这一步提醒一句（不阻止递交）
+        remind: selfcheck ? () => {
+          const missing = $$('input[data-selfcheck-item]', selfcheck).filter((input) => !input.checked)
+            .map((input) => textOf(input.closest('label').querySelector('b')).replace(/^[①②③④]\s*/, ''));
+          return missing.length ? `自检还没勾：${missing.join('、')}，可以先补上` : '';
+        } : null,
+        // Q1—Q4：递交放在“写完自检”下面——先写、再自检、最后递交
+        anchor: (bar) => (selfcheck ? selfcheck.insertAdjacentElement('afterend', bar) : box.appendChild(bar)),
         read: () => (area.value.trim() ? area.value.trim() : null),
         check: (value) => (value ? '' : '请先写好作答，再点“递交”'),
         show: (value) => (value ? [value] : []),

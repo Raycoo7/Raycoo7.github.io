@@ -172,3 +172,18 @@ em { color: var(--muted); font-style: normal; font-size: 14px; white-space: nowr
 .tw-marks .tw-text { white-space: pre-wrap; }
 .tw-marks li.is-text { grid-column: 1 / -1; }
 .tw-table td small, .tw-at { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+/* 班级与点名册 */
+.tw-course strong small, .tw-picker h1 small { color: var(--muted); font-size: 16px; font-weight: 600; }
+.tw-new-class { margin-top: 20px; }
+.tw-new-class input { max-width: 420px; }
+.tw-file { position: relative; display: inline-block; overflow: hidden; }
+.tw-file input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.tw-table tr.tw-absent td { background: #fbf3ef; }
+.tw-table tr.tw-extra td { background: #fff8e6; }
+[data-roster-preview] h2 small { margin-left: 8px; color: var(--muted); font-size: 14px; font-weight: 600; }
+[data-roster-preview] .tw-table { margin: 10px 0; }
+.tw-reference { margin-top: 8px; font-weight: 400; font-size: 15px; }
+.tw-reference summary { color: var(--teal); font-weight: 800; cursor: pointer; }
+.tw-reference ol { margin: 6px 0 0; padding-left: 22px; }
+.tw-reference ol.is-steps { padding-left: 0; list-style: none; }
+.tw-reference ol.is-steps li { margin: 6px 0; }

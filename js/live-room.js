@@ -78,7 +78,7 @@
   async function load() {
     try {
       const rooms = await backend.fetchAll('classrooms', { course: config.course });
-      room = rooms.find((row) => row.is_current) || null;
+      room = window.ClassLive.pickRoom(rooms, config.course, unit);
       if (!room) show('课堂：当前没有开放的课堂（在工作台发布）', false);
       else if (room.chapter !== unit) show(`课堂：当前课堂“${esc(room.name)}”不是${HERE}`, false);
       else show(`课堂：${esc(room.name)} <b>${esc(room.code)}</b> · ${room.submissions_open ? '学生可递交' : '已结束提交'}`, true);

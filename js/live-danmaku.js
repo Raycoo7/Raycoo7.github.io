@@ -5,6 +5,8 @@
  * 清屏：撤下屏幕上现有弹幕，并让它们不再循环（本机按课堂记住，刷新页面也不会回来）；之后的新弹幕照常上屏和循环。
  *       清屏只影响投屏显示，工作台里的弹幕记录不受影响。
  * 左下角小控件：循环开关、暂停、清屏、收起。页面需先加载 live-core.js，并设置 window.CLASS_LIVE_CONFIG。
+ * 机制图“弹幕接龙”：学生弹幕以“【案例号箭头】”开头（如【01①→②】），除照常滚动外，还会放进投屏机制图对应节点下的
+ *   [data-mech-wall]（每个箭头显示最新 3 条，新来的弹入并让节点闪一下）；显示规则与滚动弹幕相同（模式、审核、清屏）。
  */
 (function () {
   'use strict';
@@ -12,6 +14,8 @@
   if (!config || config.provider === 'off' || !window.ClassLive) return;
   let backend;
   try { backend = window.ClassLive.create(config); } catch (error) { return; }
+  // 有弹幕的投屏页才显示机制图的“弹幕接龙”说明和节点弹幕区（本地或离线打开时不显示）
+  document.documentElement.classList.add('has-danmaku');
 
   const POLL_MS = 3000;
   const ROOM_MS = 10000;
@@ -40,6 +44,16 @@
   .dm-bar button[aria-pressed="true"] { background: rgba(255,255,255,.2); }
   .dm-bar a { color: #ffd98a; }
   .dm-bar.is-min > :not([data-dm-toggle]) { display: none; }
+  .dm-link { margin: 0 4px; padding: 0 6px; border-radius: 9px; color: #201c18; background: #ffd98a; font-size: .8em; }
+  .dm-bubble { padding: 6px 10px; border: 1px solid rgba(35, 101, 95, .28); border-radius: 12px 12px 12px 3px; color: #201c18; background: #fff;
+    box-shadow: 0 4px 12px rgba(35, 101, 95, .16); font: 600 15px/1.45 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; overflow-wrap: anywhere; }
+  .dm-bubble b { margin-right: 4px; color: #a4492d; }
+  .dm-bubble.is-pop { animation: dm-pop .6s cubic-bezier(.2, 1.4, .4, 1) both; }
+  .dm-wall-count { justify-self: end; color: #23655f; font: 800 12px/1 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .mechanism-node.dm-hit::before { content: ""; position: absolute; inset: -2px; border-radius: 10px; pointer-events: none; animation: dm-hit 1.1s ease-out 2; }
+  @keyframes dm-pop { 0% { opacity: 0; transform: translateY(12px) scale(.6); } 100% { opacity: 1; transform: none; } }
+  @keyframes dm-hit { 0% { box-shadow: 0 0 0 0 rgba(164, 73, 45, .55); } 100% { box-shadow: 0 0 0 22px rgba(164, 73, 45, 0); } }
+  @media (prefers-reduced-motion: reduce) { .dm-bubble.is-pop, .mechanism-node.dm-hit::before { animation: none; } }
   @media print { .dm-stage, .dm-bar { display: none !important; } }
   `;
   document.head.appendChild(style);
@@ -103,8 +117,17 @@
     item.className = isNew ? 'dm-item is-new' : 'dm-item';
     const name = document.createElement('span');
     name.className = 'dm-name';
-    name.textContent = `${doc.name}：`;
-    item.append(name, document.createTextNode(doc.text));
+    const tag = tagOf(doc);
+    if (tag) {
+      name.textContent = doc.name;
+      const link = document.createElement('span');
+      link.className = 'dm-link';
+      link.textContent = tag.link;
+      item.append(name, link, document.createTextNode(`：${tag.text}`));
+    } else {
+      name.textContent = `${doc.name}：`;
+      item.append(name, document.createTextNode(doc.text));
+    }
     item.style.top = `${lane * (100 / LANES)}%`;
     item.style.setProperty('--dm-duration', `${10 + Math.min(doc.text.length + String(doc.name).length, 50) / 8}s`);
     item.style.animationDelay = `${delay}ms`;
@@ -115,6 +138,64 @@
   };
 
   const visible = (doc) => (room.danmaku === 'review' ? doc.status === 'shown' : doc.status !== 'hidden');
+
+  // ---------- 机制图“弹幕接龙” ----------
+  const TAG = /^【(\d{2})([①②③④])→([①②③④])】\s*/;
+  function tagOf(doc) {
+    const match = TAG.exec(doc.text || '');
+    return match ? { key: `${match[1]}|${match[2]}→${match[3]}`, link: `${match[2]}→${match[3]}`, text: doc.text.slice(match[0].length) } : null;
+  }
+  const WALL_MAX = 3;
+  const walls = new Map();
+  document.querySelectorAll('[data-mech-wall]').forEach((el) => walls.set(`${el.dataset.case}|${el.dataset.link}`, el));
+  const wallShown = new Map();   // 箭头 → 正在显示的弹幕 id
+  let wallsPrimed = false;
+  function renderWalls(docs) {
+    if (!walls.size) return;
+    const groups = new Map();
+    docs.forEach((doc) => {
+      const tag = tagOf(doc);
+      if (!tag || !walls.has(tag.key)) return;
+      if (!groups.has(tag.key)) groups.set(tag.key, []);
+      groups.get(tag.key).push({ doc, tag });
+    });
+    walls.forEach((wall, key) => {
+      const list = groups.get(key) || [];
+      const latest = list.slice(-WALL_MAX);
+      const before = wallShown.get(key) || [];
+      const ids = latest.map(({ doc }) => String(doc.id));
+      const placeholder = wall.querySelector('em');
+      if (placeholder) placeholder.hidden = list.length > 0;
+      let count = wall.querySelector('.dm-wall-count');
+      if (ids.join() !== before.join()) {
+        wall.querySelectorAll('.dm-bubble').forEach((el) => el.remove());
+        let fresh = false;
+        latest.forEach(({ doc, tag }) => {
+          const bubble = document.createElement('div');
+          const isNew = wallsPrimed && !before.includes(String(doc.id));
+          fresh = fresh || isNew;
+          bubble.className = isNew ? 'dm-bubble is-pop' : 'dm-bubble';
+          const who = document.createElement('b');
+          who.textContent = `${doc.name}：`;
+          bubble.append(who, document.createTextNode(tag.text));
+          wall.insertBefore(bubble, count);
+        });
+        wallShown.set(key, ids);
+        const node = wall.closest('.mechanism-node');
+        if (fresh && node) {
+          node.classList.remove('dm-hit');
+          void node.offsetWidth;
+          node.classList.add('dm-hit');
+          setTimeout(() => node.classList.remove('dm-hit'), 2400);
+        }
+      }
+      if (list.length > WALL_MAX) {
+        if (!count) { count = document.createElement('span'); count.className = 'dm-wall-count'; wall.appendChild(count); }
+        count.textContent = `共 ${list.length} 条`;
+      } else if (count) count.remove();
+    });
+    wallsPrimed = true;
+  }
   const dropFromPool = (id) => {
     if (!inPool.has(id)) return;
     inPool.delete(id);
@@ -126,7 +207,8 @@
   async function pollRoom() {
     try {
       const rooms = await backend.fetchAll('classrooms', { course: config.course });
-      const next = rooms.find((row) => row.is_current) || null;
+      const unit = config.unit || (location.pathname.match(/([a-z]{2,6}\d{2})\.html$/) || [])[1];
+      const next = window.ClassLive.pickRoom(rooms, config.course, unit);
       const changed = !room || !next || `${room.id}|${room.danmaku}` !== `${next.id}|${next.danmaku}`;
       room = next;
       if (!room) { setState('弹幕：没有当前课堂'); return false; }
@@ -160,6 +242,7 @@
         }
       });
       primed = true;
+      renderWalls(rows.filter((doc) => !cleared.has(String(doc.id)) && visible(doc)));
       refreshState();
     } catch (error) {
       console.warn('[弹幕]', error);
@@ -195,6 +278,7 @@
     stage.innerHTML = '';
     flying.clear();
     laneFree.fill(0);
+    renderWalls([]);
     if (room) setState(`弹幕：${room.danmaku === 'off' ? '已关闭' : modeText()} · 已清屏，之前的弹幕不再循环`);
   });
   bar.querySelector('[data-dm-toggle]').addEventListener('click', (event) => {
